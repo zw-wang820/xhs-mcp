@@ -1,0 +1,13 @@
+# 运行时数据：登录态等同于账号凭据，绝不发布
+profile/
+captures/
+state.json
+*.log
+
+# 开发产物
+dist/
+node_modules/
+
+# 本机环境
+.env
+.DS_Store
