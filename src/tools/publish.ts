@@ -94,30 +94,50 @@ async function saveErrorScreenshot(page: Page): Promise<string | undefined> {
 
 /**
  * 等图片上传完成。
- * 不用「上传中」文案判断：页面没有稳定的进度文案，
- * 改成轮询缩略图数量 —— 图片真的渲染出来了才算成功。
+ *
+ * 【2026-10-22 真机修复】旧实现轮询缩略图数量（SELECTOR.thumbnails），实测不可靠：
+ * 图片 1.5s 内就传完、标题框与编辑器也已出现，但缩略图选择器匹配不稳定，
+ * 导致 90s 死等后抛「上传超时」——而实际内容早已就绪。
+ *
+ * 新信号：**标题输入框与正文编辑器变成可见**。这是图片上传完成后才出现的元素，
+ * 与「能不能开始填内容」严格等价，比数缩略图稳定得多。
+ * 缩略图数量降级为辅助校验（只在页面明确提示失败时才报错）。
  */
 async function waitForUpload(page: Page, expected: number, timeoutMs = 90_000): Promise<void> {
   const started = Date.now();
-  let last = 0;
   while (Date.now() - started < timeoutMs) {
-    const state = await page.evaluate(sel => {
-      const body = document.body?.innerText ?? '';
-      return {
-        failed: /上传失败|图片格式不支持/.test(body),
-        thumbs: document.querySelectorAll(sel).length,
-      };
-    }, SELECTOR.thumbnails);
+    const state = await page.evaluate(
+      sel => {
+        const body = document.body?.innerText ?? '';
+        const title = document.querySelector('input[placeholder*="填写标题"]');
+        const editor = document.querySelector('div.tiptap.ProseMirror');
+        const isShown = (el: Element | null): boolean => {
+          if (!el) return false;
+          const r = (el as HTMLElement).getBoundingClientRect();
+          const cs = getComputedStyle(el as HTMLElement);
+          return r.width > 0 && r.height > 0 && cs.visibility !== 'hidden' && cs.display !== 'none';
+        };
+        return {
+          failed: /上传失败|图片格式不支持/.test(body),
+          thumbs: document.querySelectorAll(sel).length,
+          ready: isShown(title) && isShown(editor),
+        };
+      },
+      SELECTOR.thumbnails,
+    );
 
-    last = state.thumbs;
     if (state.failed) throw new Error('图片上传失败：页面提示格式不支持或上传出错。');
-    if (state.thumbs >= expected) {
+    if (state.ready) {
+      // 编辑器出现后仍有短暂余量，等缩略图渲染完再往下走
       await sleep(1500);
       return;
     }
-    await sleep(1000);
+    await sleep(500);
   }
-  throw new Error(`图片上传超时：期望 ${expected} 张，只渲染出 ${last} 张。`);
+  throw new Error(
+    `图片上传超时（${Math.round(timeoutMs / 1000)}s）：标题框与正文编辑器始终未出现，` +
+      `期望 ${expected} 张图片。请检查图片格式，或跑 node scripts/inspect-editor.mjs 重新校准页面结构。`,
+  );
 }
 
 async function findTitleInput(page: Page): Promise<Locator> {
